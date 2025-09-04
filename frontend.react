@@ -1,0 +1,636 @@
+html :
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StoreRatings</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+
+src/main.jsx :
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import App from './App'
+import { AuthProvider } from './state/AuthContext'
+import './styles.css'
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </BrowserRouter>
+  </React.StrictMode>
+)
+
+src/App.jsx :
+import { Routes, Route, Navigate } from 'react-router-dom'
+import NavBar from './components/NavBar'
+import Login from './pages/Login'
+import Register from './pages/Register'
+import AdminDashboard from './pages/AdminDashboard'
+import UserDashboard from './pages/UserDashboard'
+import OwnerDashboard from './pages/OwnerDashboard'
+import { ProtectedRoute } from './state/AuthContext'
+
+export default function App() {
+  return (
+    <>
+      <NavBar />
+      <Routes>
+        <Route path="/" element={<Navigate to="/login" />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/register" element={<Register />} />
+
+        <Route element={<ProtectedRoute roles={['ADMIN']} />}>
+          <Route path="/admin" element={<AdminDashboard />} />
+        </Route>
+
+        <Route element={<ProtectedRoute roles={['USER']} />}>
+          <Route path="/user" element={<UserDashboard />} />
+        </Route>
+
+        <Route element={<ProtectedRoute roles={['STORE_OWNER']} />}>
+          <Route path="/owner" element={<OwnerDashboard />} />
+        </Route>
+
+        <Route path="*" element={<h3 style={{ padding: 24 }}>Not Found</h3>} />
+      </Routes>
+    </>
+  )
+}
+
+src/state/AuthContext.jsx :
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { Outlet, Navigate, useLocation } from 'react-router-dom'
+import api from '../utils/api'
+
+const AuthCtx = createContext()
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(() => {
+    const raw = localStorage.getItem('auth')
+    return raw ? JSON.parse(raw) : null
+  })
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  const login = async (email, password) => {
+    setLoading(true); setError('')
+    try {
+      const { data } = await api.post('/auth/login', { email, password })
+      // expected shape: { token, user: { id, name, email, role } }
+      api.setToken(data.token)
+      const payload = { token: data.token, user: data.user }
+      localStorage.setItem('auth', JSON.stringify(payload))
+      setUser(payload)
+      return data.user.role
+    } catch (e) {
+      setError(e?.response?.data?.message || 'Login failed')
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const register = async (payload) => {
+    setLoading(true); setError('')
+    try {
+      await api.post('/auth/register', payload)
+    } catch (e) {
+      setError(e?.response?.data?.message || 'Signup failed')
+      throw e
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const logout = () => {
+    api.setToken(null)
+    localStorage.removeItem('auth')
+    setUser(null)
+  }
+
+  useEffect(() => {
+    const raw = localStorage.getItem('auth')
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      api.setToken(parsed.token)
+    }
+  }, [])
+
+  const value = useMemo(() => ({ user, login, logout, register, loading, error }), [user, loading, error])
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>
+}
+
+export const useAuth = () => useContext(AuthCtx)
+
+export function ProtectedRoute({ roles }) {
+  const { user } = useAuth()
+  const location = useLocation()
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />
+  if (roles && !roles.includes(user.user.role)) return <Navigate to="/login" replace />
+  return <Outlet />
+}
+
+src/utils/api.js :
+import axios from 'axios'
+
+const BASE_URL = 'http://localhost:4000/api' // <- change to your backend
+
+const instance = axios.create({ baseURL: BASE_URL })
+
+let token = null
+function setToken(t) {
+  token = t
+}
+instance.interceptors.request.use((config) => {
+  if (token) config.headers.Authorization = Bearer ${token}
+  return config
+})
+
+export default {
+  get: (...args) => instance.get(...args),
+  post: (...args) => instance.post(...args),
+  put: (...args) => instance.put(...args),
+  del: (...args) => instance.delete(...args),
+  setToken
+}
+
+src/utils/validation.js :
+export const validateName = (v) =>
+  v && v.trim().length >= 20 && v.trim().length <= 60
+
+export const validateAddress = (v) => !v || v.trim().length <= 400
+
+export const validateEmail = (v) =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)
+
+export const validatePassword = (v) =>
+  /^(?=.[A-Z])(?=.[^A-Za-z0-9]).{8,16}$/.test(v)
+
+  src/components/NavBar.jsx :
+  import { Link, useNavigate } from 'react-router-dom'
+import { useAuth } from '../state/AuthContext'
+
+export default function NavBar() {
+  const { user, logout } = useAuth()
+  const navigate = useNavigate()
+  const onLogout = () => { logout(); navigate('/login') }
+
+  return (
+    <header className="nav">
+      <h1>StoreRatings</h1>
+      <nav>
+        {!user && (<>
+          <Link to="/login">Login</Link>
+          <Link to="/register">Register</Link>
+        </>)}
+
+        {user?.user?.role === 'ADMIN' && <Link to="/admin">Admin</Link>}
+        {user?.user?.role === 'USER' && <Link to="/user">User</Link>}
+        {user?.user?.role === 'STORE_OWNER' && <Link to="/owner">Owner</Link>}
+        {user && <button onClick={onLogout}>Logout</button>}
+      </nav>
+    </header>
+  )
+}
+
+src/components/storeCard.jsx :
+import { useState } from 'react'
+
+export default function StoreCard({ store, onRate, myRating }) {
+  const [value, setValue] = useState(myRating ?? 0)
+
+  const submit = () => {
+    if (value >= 1 && value <= 5) onRate(store.id, value)
+  }
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>{store.name}</h3>
+        <span className="badge">{Number(store.avgRating ?? 0).toFixed(1)}</span>
+      </div>
+      <p className="muted">{store.address}</p>
+
+      <div className="rater">
+        <label>Your rating:</label>
+        <select value={value} onChange={(e) => setValue(Number(e.target.value))}>
+          <option value="0">Select</option>
+          {[1,2,3,4,5].map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <button onClick={submit}>{myRating ? 'Update' : 'Submit'}</button>
+      </div>
+    </div>
+  )
+}
+
+src/pages/Login.jsx :
+import { useState } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { useAuth } from '../state/AuthContext'
+
+export default function Login() {
+  const { login, loading, error } = useAuth()
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const navigate = useNavigate()
+  const location = useLocation()
+
+  const submit = async (e) => {
+    e.preventDefault()
+    try {
+      const role = await login(email, password)
+      const dest = location.state?.from?.pathname || (role === 'ADMIN' ? '/admin' : role === 'STORE_OWNER' ? '/owner' : '/user')
+      navigate(dest, { replace: true })
+    } catch {}
+  }
+
+  return (
+    <div className="paper">
+      <h2>Login</h2>
+      <form onSubmit={submit} className="form">
+        <input placeholder="Email" value={email} onChange={e=>setEmail(e.target.value)} />
+        <input placeholder="Password" type="password" value={password} onChange={e=>setPassword(e.target.value)} />
+        <button disabled={loading}>Login</button>
+      </form>
+      {error && <p className="error">{error}</p>}
+    </div>
+  )
+}
+
+src/pages/Register.jsx :
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useAuth } from '../state/AuthContext'
+import { validateAddress, validateEmail, validateName, validatePassword } from '../utils/validation'
+
+export default function Register() {
+  const { register, loading, error } = useAuth()
+  const [form, setForm] = useState({ name: '', email: '', address: '', password: '' })
+  const navigate = useNavigate()
+
+  const valid = validateName(form.name) &&
+                validateEmail(form.email) &&
+                validateAddress(form.address) &&
+                validatePassword(form.password)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    if (!valid) return
+    try {
+      await register(form)
+      navigate('/login')
+    } catch {}
+  }
+
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value })
+
+  return (
+    <div className="paper">
+      <h2>Register (Normal User)</h2>
+      <form onSubmit={submit} className="form">
+        <input placeholder="Name (20-60 chars)" value={form.name} onChange={set('name')} />
+        <input placeholder="Email" value={form.email} onChange={set('email')} />
+        <input placeholder="Address (<= 400 chars)" value={form.address} onChange={set('address')} />
+        <input placeholder="Password (8-16, 1 uppercase, 1 special)" type="password" value={form.password} onChange={set('password')} />
+        <button disabled={!valid || loading}>Sign up</button>
+      </form>
+      {!validateName(form.name) && <p className="hint">Name must be 20–60 characters.</p>}
+      {!validatePassword(form.password) && <p className="hint">Password must be 8–16 with 1 uppercase & 1 special.</p>}
+      {error && <p className="error">{error}</p>}
+    </div>
+  )
+}
+
+src/pages/AdminDashboard.jsx :
+import { useEffect, useMemo, useState } from 'react'
+import api from '../utils/api'
+import { validateAddress, validateEmail, validateName } from '../utils/validation'
+
+export default function AdminDashboard() {
+  const [stats, setStats] = useState({ users: 0, stores: 0, ratings: 0 })
+  const [users, setUsers] = useState([])
+  const [stores, setStores] = useState([])
+  const [query, setQuery] = useState({ search: '', role: 'ALL', sort: 'name', dir: 'asc' })
+  const [uForm, setUForm] = useState({ name:'', email:'', address:'', role:'USER', password: 'Pass@1234' })
+  const [sForm, setSForm] = useState({ name:'', address:'', ownerId:'' })
+
+  useEffect(() => {
+    const load = async () => {
+      const [{ data: st }, { data: us }, { data: ss }] = await Promise.all([
+        api.get('/admin/dashboard'),
+        api.get('/admin/users'),
+        api.get('/admin/stores')
+      ])
+      setStats(st)
+      setUsers(us)
+      setStores(ss)
+    }
+    load().catch(console.error)
+  }, [])
+
+  const filteredUsers = useMemo(() => {
+    let out = [...users]
+    const term = query.search.toLowerCase()
+    if (term) out = out.filter(u =>
+      u.name.toLowerCase().includes(term) ||
+      u.email.toLowerCase().includes(term) ||
+      (u.address||'').toLowerCase().includes(term)
+    )
+    if (query.role !== 'ALL') out = out.filter(u => u.role === query.role)
+    out.sort((a,b) => {
+      const k = query.sort
+      const A = String(a[k]||'').toLowerCase()
+      const B = String(b[k]||'').toLowerCase()
+      return query.dir === 'asc' ? (A > B ? 1 : A < B ? -1 : 0) : (A < B ? 1 : A > B ? -1 : 0)
+    })
+    return out
+  }, [users, query])
+
+  const createUser = async (e) => {
+    e.preventDefault()
+    if (!validateName(uForm.name) || !validateEmail(uForm.email) || !validateAddress(uForm.address)) return
+    const { data } = await api.post('/admin/users', uForm)
+    setUsers([data, ...users])
+    setUForm({ name:'', email:'', address:'', role:'USER', password:'Pass@1234' })
+  }
+
+  const createStore = async (e) => {
+    e.preventDefault()
+    if (!uForm.name && !sForm.name) {}
+    const { data } = await api.post('/admin/stores', {
+      name: sForm.name, address: sForm.address, ownerId: Number(sForm.ownerId) || null
+    })
+    setStores([data, ...stores])
+    setSForm({ name:'', address:'', ownerId:'' })
+  }
+
+  const toggleSort = (k) => {
+    setQuery(q => ({ ...q, sort: k, dir: q.sort === k && q.dir === 'asc' ? 'desc' : 'asc' }))
+  }
+
+  return (
+    <div className="wrap">
+      <section className="paper">
+        <h2>Dashboard</h2>
+        <div className="stats">
+          <div><b>Total Users</b><span>{stats.users}</span></div>
+          <div><b>Total Stores</b><span>{stats.stores}</span></div>
+          <div><b>Total Ratings</b><span>{stats.ratings}</span></div>
+        </div>
+      </section>
+
+      <section className="paper grid-2">
+        <div>
+          <h3>Add User</h3>
+          <form onSubmit={createUser} className="form">
+            <input placeholder="Name" value={uForm.name} onChange={e=>setUForm({...uForm,name:e.target.value})}/>
+            <input placeholder="Email" value={uForm.email} onChange={e=>setUForm({...uForm,email:e.target.value})}/>
+            <input placeholder="Address" value={uForm.address} onChange={e=>setUForm({...uForm,address:e.target.value})}/>
+            <select value={uForm.role} onChange={e=>setUForm({...uForm,role:e.target.value})}>
+              <option>USER</option>
+              <option>STORE_OWNER</option>
+              <option>ADMIN</option>
+            </select>
+            <button>Create</button>
+          </form>
+        </div>
+
+        <div>
+          <h3>Add Store</h3>
+          <form onSubmit={createStore} className="form">
+            <input placeholder="Store name" value={sForm.name} onChange={e=>setSForm({...sForm,name:e.target.value})}/>
+            <input placeholder="Address" value={sForm.address} onChange={e=>setSForm({...sForm,address:e.target.value})}/>
+            <input placeholder="Owner ID (optional)" value={sForm.ownerId} onChange={e=>setSForm({...sForm,ownerId:e.target.value})}/>
+            <button>Create</button>
+          </form>
+        </div>
+      </section>
+
+      <section className="paper">
+        <h3>Users</h3>
+        <div className="toolbar">
+          <input placeholder="Search name/email/address" value={query.search} onChange={e=>setQuery({...query,search:e.target.value})}/>
+          <select value={query.role} onChange={e=>setQuery({...query,role:e.target.value})}>
+            <option value="ALL">All</option>
+            <option value="USER">USER</option>
+            <option value="STORE_OWNER">STORE_OWNER</option>
+            <option value="ADMIN">ADMIN</option>
+          </select>
+        </div>
+
+        <table className="table">
+          <thead>
+            <tr>
+              <th onClick={()=>toggleSort('name')}>Name</th>
+              <th onClick={()=>toggleSort('email')}>Email</th>
+              <th onClick={()=>toggleSort('address')}>Address</th>
+              <th onClick={()=>toggleSort('role')}>Role</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredUsers.map(u=>(
+              <tr key={u.id}>
+                <td>{u.name}</td>
+                <td>{u.email}</td>
+                <td className="ellipsis">{u.address}</td>
+                <td>{u.role}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+
+      <section className="paper">
+        <h3>Stores</h3>
+        <table className="table">
+          <thead><tr><th>Name</th><th>Address</th><th>Owner</th><th>Avg Rating</th></tr></thead>
+          <tbody>
+            {stores.map(s=>(
+              <tr key={s.id}>
+                <td>{s.name}</td>
+                <td className="ellipsis">{s.address}</td>
+                <td>{s.ownerName || '-'}</td>
+                <td>{Number(s.avgRating ?? 0).toFixed(1)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  )
+}
+
+src/pages/UserDashboard.jsx :
+import { useEffect, useMemo, useState } from 'react'
+import api from '../utils/api'
+import StoreCard from '../components/StoreCard'
+
+export default function UserDashboard() {
+  const [stores, setStores] = useState([])
+  const [myRatings, setMyRatings] = useState({}) // storeId -> rating
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState({ key: 'name', dir: 'asc' })
+
+  useEffect(() => {
+    const load = async () => {
+      const [{ data: st }, { data: mr }] = await Promise.all([
+        api.get('/stores?includeAvg=true'),
+        api.get('/me/ratings')
+      ])
+      setStores(st)
+      setMyRatings(mr.reduce((acc, r) => (acc[r.storeId] = r.rating, acc), {}))
+    }
+    load().catch(console.error)
+  }, [])
+
+  const onRate = async (storeId, value) => {
+    await api.post(/ratings/${storeId}, { rating: value })
+    setMyRatings({ ...myRatings, [storeId]: value })
+    // refresh avg
+    const { data } = await api.get('/stores?includeAvg=true')
+    setStores(data)
+  }
+
+  const filtered = useMemo(() => {
+    let out = stores.filter(s =>
+      s.name.toLowerCase().includes(search.toLowerCase()) ||
+      (s.address || '').toLowerCase().includes(search.toLowerCase())
+    )
+    out.sort((a,b)=>{
+      const A = String(a[sort.key]||'').toLowerCase()
+      const B = String(b[sort.key]||'').toLowerCase()
+      return sort.dir === 'asc' ? (A > B ? 1 : A < B ? -1 : 0) : (A < B ? 1 : A > B ? -1 : 0)
+    })
+    return out
+  }, [stores, search, sort])
+
+  const toggleSort = (k) => setSort(s => ({ key: k, dir: s.key===k && s.dir==='asc' ? 'desc' : 'asc' }))
+
+  return (
+    <div className="wrap">
+      <section className="paper">
+        <h2>Browse Stores</h2>
+        <div className="toolbar">
+          <input placeholder="Search name/address" value={search} onChange={e=>setSearch(e.target.value)} />
+          <div className="sorters">
+            <button onClick={()=>toggleSort('name')}>Sort by Name</button>
+            <button onClick={()=>toggleSort('avgRating')}>Sort by Rating</button>
+          </div>
+        </div>
+        <div className="grid">
+          {filtered.map(s => (
+            <StoreCard key={s.id} store={s} myRating={myRatings[s.id]} onRate={onRate} />
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+src/pages/OwnerDashboard.jsx :
+import { useEffect, useState } from 'react'
+import api from '../utils/api'
+
+export default function OwnerDashboard() {
+  const [store, setStore] = useState(null)
+  const [ratings, setRatings] = useState([])
+
+  useEffect(() => {
+    const load = async () => {
+      // backend should return the store owned by this user
+      const { data: st } = await api.get('/owner/store')
+      setStore(st)
+      if (st?.id) {
+        const { data: rs } = await api.get(/owner/stores/${st.id}/ratings)
+        setRatings(rs)
+      }
+    }
+    load().catch(console.error)
+  }, [])
+
+  const avg = (ratings.reduce((a,r)=>a+r.rating,0) / (ratings.length || 1)).toFixed(1)
+
+  return (
+    <div className="wrap">
+      <section className="paper">
+        <h2>My Store</h2>
+        {!store ? <p>No store assigned.</p> : (
+          <>
+            <p><b>{store.name}</b> — {store.address}</p>
+            <p>Average Rating: <b>{avg}</b> ({ratings.length} ratings)</p>
+          </>
+        )}
+      </section>
+
+      <section className="paper">
+        <h3>Users who rated</h3>
+        <table className="table">
+          <thead><tr><th>User</th><th>Email</th><th>Rating</th></tr></thead>
+          <tbody>
+            {ratings.map(r => (
+              <tr key={r.id}>
+                <td>{r.userName}</td>
+                <td>{r.userEmail}</td>
+                <td>{r.rating}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  )
+}
+
+src/styles.css :
+:root { --bg:#0b1220; --panel:#111a2b; --muted:#8aa0b6; --text:#e9f0f8; --primary:#4ea1ff; --accent:#7affc6; }
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body { margin:0; background: linear-gradient(180deg,#0b1220,#091018); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+
+.nav { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; background:#0a1526; border-bottom:1px solid #1f2d46; position: sticky; top:0; z-index:5; }
+.nav h1 { margin:0; font-size:20px; letter-spacing:.5px; }
+.nav nav { display:flex; gap:10px; align-items:center; }
+.nav a { color:var(--text); text-decoration:none; padding:8px 10px; border-radius:8px; }
+.nav a:hover { background:#142540; }
+.nav button { background:var(--primary); color:#031020; border:0; padding:8px 12px; border-radius:8px; cursor:pointer; }
+
+.wrap { max-width:1100px; margin:24px auto; padding:0 16px; }
+.paper { background:var(--panel); border:1px solid #1f2d46; border-radius:14px; padding:16px; margin-bottom:18px; }
+.grid { display:grid; grid-template-columns: repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
+.grid-2 { display:grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
+
+.form { display:flex; flex-direction:column; gap:10px; }
+.form input, .form select { padding:10px 12px; background:#0c1526; border:1px solid #223554; color:var(--text); border-radius:10px; }
+.form button { background:var(--primary); color:#07101e; border:0; padding:10px 12px; border-radius:10px; cursor:pointer; }
+
+.toolbar { display:flex; gap:10px; align-items:center; margin:10px 0; }
+.sorters button { border:1px solid #224064; background:#0d1d34; color:var(--text); padding:8px 10px; border-radius:8px; cursor:pointer; }
+
+.card { background:#0d1a2c; border:1px solid #1e2f4d; border-radius:12px; padding:12px; }
+.card-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+.badge { background:#0f2440; border:1px solid #244a78; padding:4px 8px; border-radius:999px; }
+
+.rater { display:flex; gap:8px; align-items:center; margin-top:10px; }
+.rater select, .rater button { padding:8px 10px; border-radius:8px; border:1px solid #244a78; background:#0c1526; color:var(--text); }
+.rater button { background:var(--accent); color:#002a17; border-color:#1f7a59; }
+
+.table { width:100%; border-collapse:collapse; }
+.table th, .table td { text-align:left; padding:10px; border-bottom:1px solid #1d2b45; }
+.table th { cursor:pointer; color:#a6bfd8; }
+.ellipsis { max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.stats { display:grid; grid-template-columns: repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
+.stats > div { background:#0d1d34; border:1px solid #224064; padding:12px; border-radius:12px; display:flex; justify-content:space-between; }
+.muted { color:var(--muted); margin:0 0 6px; }
+.error { color:#ff8c8c; margin-top:8px; }
+.hint { color:#ffd188; margin:4px 0 0; }
