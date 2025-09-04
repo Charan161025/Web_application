@@ -1,0 +1,265 @@
+config/db.js :
+const { Sequelize } = require("sequelize");
+
+const sequelize = new Sequelize(process.env.DB_NAME, process.env.DB_USER, process.env.DB_PASS, {
+  host: process.env.DB_HOST,
+  dialect: process.env.DB_DIALECT || "postgres",  // or mysql
+  logging: false
+});
+
+module.exports = sequelize;
+
+models/User.js :
+const { DataTypes } = require("sequelize");
+const sequelize = require("../config/db");
+
+const User = sequelize.define("User", {
+  name: { type: DataTypes.STRING(60), allowNull: false },
+  email: { type: DataTypes.STRING, allowNull: false, unique: true },
+  password: { type: DataTypes.STRING, allowNull: false },
+  address: { type: DataTypes.STRING(400), allowNull: false },
+  role: { 
+    type: DataTypes.ENUM("admin", "user", "owner"), 
+    defaultValue: "user" 
+  }
+});
+
+module.exports = User;
+
+
+models/Store.js :
+const { DataTypes } = require("sequelize");
+const sequelize = require("../config/db");
+
+const Store = sequelize.define("Store", {
+  name: { type: DataTypes.STRING(60), allowNull: false },
+  address: { type: DataTypes.STRING(400), allowNull: false }
+});
+
+module.exports = Store;
+
+models/Rating.js :
+const { DataTypes } = require("sequelize");
+const sequelize = require("../config/db");
+const User = require("./User");
+const Store = require("./Store");
+
+const Rating = sequelize.define("Rating", {
+  value: { 
+    type: DataTypes.INTEGER, 
+    allowNull: false, 
+    validate: { min: 1, max: 5 }
+  }
+});
+
+// Relations
+User.hasMany(Rating);
+Rating.belongsTo(User);
+
+Store.hasMany(Rating);
+Rating.belongsTo(Store);
+
+module.exports = Rating;
+
+middleware/auth.js :
+const jwt = require("jsonwebtoken");
+
+module.exports = (req, res, next) => {
+  const token = req.header("Authorization")?.split(" ")[1];
+  if (!token) return res.status(401).json({ msg: "No token, auth denied" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; 
+    next();
+  } catch (err) {
+    res.status(401).json({ msg: "Invalid token" });
+  }
+};
+
+middleware/roleCheck.js :
+module.exports = (roles) => {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      return res.status(403).json({ msg: "Forbidden" });
+    }
+    next();
+  };
+};
+
+controllers/autoController.js :
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const { validationResult } = require("express-validator");
+const User = require("../models/User");
+
+exports.register = async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+  const { name, email, password, address, role } = req.body;
+  try {
+    let user = await User.findOne({ where: { email } });
+    if (user) return res.status(400).json({ msg: "User already exists" });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    user = await User.create({ name, email, password: hashedPassword, address, role });
+
+    res.json({ msg: "User registered successfully" });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+};
+
+exports.login = async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const user = await User.findOne({ where: { email } });
+    if (!user) return res.status(400).json({ msg: "Invalid credentials" });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ msg: "Invalid credentials" });
+
+    const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    res.json({ token });
+  } catch (err) {
+    res.status(500).json({ msg: "Server error" });
+  }
+};
+
+controllers/storeController.js :
+const Store = require("../models/Store");
+const Rating = require("../models/Rating");
+
+exports.createStore = async (req, res) => {
+  try {
+    const store = await Store.create(req.body);
+    res.json(store);
+  } catch (err) {
+    res.status(500).json({ msg: "Error creating store" });
+  }
+};
+
+exports.getStores = async (req, res) => {
+  try {
+    const stores = await Store.findAll({ include: [Rating] });
+    res.json(stores);
+  } catch (err) {
+    res.status(500).json({ msg: "Error fetching stores" });
+  }
+};
+
+controllers/ratingController.js :
+const Rating = require("../models/Rating");
+
+exports.addRating = async (req, res) => {
+  try {
+    const { storeId, value } = req.body;
+    const rating = await Rating.create({ storeId, value, UserId: req.user.id });
+    res.json(rating);
+  } catch (err) {
+    res.status(500).json({ msg: "Error submitting rating" });
+  }
+};
+
+controllers/adminController.js :
+const User = require("../models/User");
+const Store = require("../models/Store");
+const Rating = require("../models/Rating");
+
+exports.dashboard = async (req, res) => {
+  try {
+    const totalUsers = await User.count();
+    const totalStores = await Store.count();
+    const totalRatings = await Rating.count();
+    res.json({ totalUsers, totalStores, totalRatings });
+  } catch (err) {
+    res.status(500).json({ msg: "Error fetching dashboard" });
+  }
+};
+
+routes/authRoutes.js :
+const express = require("express");
+const { body } = require("express-validator");
+const { register, login } = require("../controllers/authController");
+
+const router = express.Router();
+
+router.post("/register", [
+  body("name").isLength({ min: 20, max: 60 }),
+  body("email").isEmail(),
+  body("password").isStrongPassword({ minLength: 8, maxLength: 16, minUppercase: 1, minNumbers: 1, minSymbols: 1 }),
+  body("address").isLength({ max: 400 })
+], register);
+
+router.post("/login", login);
+
+module.exports = router;
+
+routes/storeRoutes.js :
+const express = require("express");
+const { createStore, getStores } = require("../controllers/storeController");
+const auth = require("../middleware/auth");
+const roleCheck = require("../middleware/roleCheck");
+
+const router = express.Router();
+
+router.post("/", auth, roleCheck(["admin"]), createStore);
+router.get("/", auth, getStores);
+
+module.exports = router;
+
+routes/ratingRoutes.js :
+const express = require("express");
+const { addRating } = require("../controllers/ratingController");
+const auth = require("../middleware/auth");
+const router = express.Router();
+
+router.post("/", auth, addRating);
+
+module.exports = router;
+
+routes/adminRoutes.js :
+const express = require("express");
+const { dashboard } = require("../controllers/adminController");
+const auth = require("../middleware/auth");
+const roleCheck = require("../middleware/roleCheck");
+
+const router = express.Router();
+
+router.get("/dashboard", auth, roleCheck(["admin"]), dashboard);
+
+module.exports = router;
+
+server.js :
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const sequelize = require("./config/db");
+
+const authRoutes = require("./routes/authRoutes");
+const storeRoutes = require("./routes/storeRoutes");
+const ratingRoutes = require("./routes/ratingRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+
+const app = express();
+app.use(express.json());
+app.use(cors());
+
+app.use("/api/auth", authRoutes);
+app.use("/api/stores", storeRoutes);
+app.use("/api/ratings", ratingRoutes);
+app.use("/api/admin", adminRoutes);
+
+sequelize.sync().then(() => console.log("Database synced"));
+
+app.listen(5000, () => console.log("Server running on port 5000"));
+
+
+
+
+
+
+
+
+
